@@ -1,5 +1,7 @@
 # AVATR Auto Service CRM & Showroom Management System
 
+> **Release Status:** ✅ **v1.5.1 — Completed & Ready for Handover** (สถานะ: เสร็จสมบูรณ์ รอส่งมอบงาน — Updated `2026-11-15`)
+
 A modern, high-performance Dealership CRM, POS, and Auto Service Management System designed specifically for AVATR electric vehicles and automotive showrooms in Laos. Fully powered by **Supabase Cloud (PostgreSQL)** with zero-leak security architecture.
 
 ---
