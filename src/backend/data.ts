@@ -798,7 +798,7 @@ export async function loadBackendData(
         const [modelsResult, inventoryResult, customersResult, settingsResult] = await Promise.all([
           cachedVehicleModels
             ? Promise.resolve({ data: cachedVehicleModels, error: null })
-            : client.from('vehicle_models').select('id,name,subtitle,tagline,category,price_starting_usd,price_starting_lak,is_custom,colors,features,description,created_at').order('name'),
+            : client.from('vehicle_models').select('id,name,brand,subtitle,tagline,category,price_starting_usd,price_starting_lak,range_cltc,acceleration,battery_capacity,battery_supplier,charging_speed,smart_driving,powertrain,hero_image,gallery,is_custom,colors,features,description,created_at').order('name'),
           // Every account must see the whole stock and customer list, so no 100-row cap here
           fetchAllRows('vehicles'),
           fetchAllRows('customers'),

@@ -6,17 +6,18 @@ A modern, high-performance Dealership CRM, POS, and Auto Service Management Syst
 
 ## 🚀 Key Features
 
-- **🚗 Showroom & Model Catalog**: Dynamic vehicle showcase (AVATR 11, AVATR 12, AVATR 07) with color customization, detailed specs, and cloud real-time updates.
+- **🚗 Showroom & Model Catalog**: Dynamic vehicle showcase (AVATR 11, AVATR 12, AVATR 07, AVATR 06, AVATR 06T) with color customization, detailed specs, and cloud real-time updates.
 - **💼 POS & Sales Management**: Streamlined billing, package addons, atomic stock deduction, and multi-currency conversion (USD / LAK).
 - **💳 Company QR Code Payment**: Admin uploaded official BCEL OnePay QR code directly stored on Supabase Storage with instant customer display.
-- **📦 Inbound Stock-In & Inventory**: Batch receiving with custom chassis/engine VIN numbers, color selection, purchase pricing, and supplier records.
+- **📦 Inbound Stock-In & Inventory**: Admin-only batch receiving with custom chassis/engine VIN numbers, color selection, purchase pricing, and CSV import (`StockInView` / `InventoryView`).
 - **🛡️ Strict Role-Based Access Control (RBAC)**:
-  - `admin`: Full system control, role permissions, custom vehicle models, QR code upload, bill deletions.
-  - `sales`: POS, customer quote generation, vehicle catalog.
+  - **2 UI Roles (`admin`, `sales`)**: The web app exposes `Admin` and `Sales` roles (`super_admin` in DB maps to `Admin` in the UI with extra Edge protection against edits by regular `admin`); legacy `technician` and `general_user` roles were permanently removed.
+  - `admin` (Admin / Super Admin): Full system control across all views (`Inventory`, `Stock-In`, `Alerts`, `Users`), role assignments, custom vehicle models, QR/settings upload (`patch_dealership_settings`), custom discounts, payment confirmations, installment payoffs/reverts, bill voiding (`void_bill_with_reason`), CSV imports/exports, and 10-year archival.
+  - `sales` (Sales): POS sales (locked rep & server-enforced pricing), CRM leads & bookings (no lead delete / CSV import / booking discount override), installment collection (locked scheduled amount), Sales Leaderboard (`avg_discount_usd` hidden), Monthly Brand Report, Dashboard (KPI 4 revenue redacted to `0`), own/assigned bills view, and A4 document/quotation generation.
 - **⚡ Supabase Cloud & Real-Time Sync**:
   - **PostgreSQL Database**: Real-time cloud synchronization for inventory, bills, vehicle models, settings, and users.
   - **Supabase Realtime**: Instant multi-device state updates via WebSockets.
-  - **Supabase Storage**: Secure cloud storage for company payment assets & BCEL QR images (`avatr-assets` bucket).
+  - **Supabase Storage**: Secure cloud storage for company payment assets, BCEL QR images, and payment slips (`dealership-assets` and `payment-slips` buckets).
   - **Supabase Authentication**: Email & password / Phone login with JWT sessions and role assignment.
   - **Offline Demo Mode (Dev / Demo Only)**: Available in development environments for preview and UI testing (`VITE_ENABLE_OFFLINE_DEMO=true`); strictly isolated and disabled in production to protect real customer records.
 
@@ -30,10 +31,10 @@ A modern, high-performance Dealership CRM, POS, and Auto Service Management Syst
    - **Airtight `.gitignore`**: All environment files (`.env`, `.env.local`, `.env.*.local`), certificates, credentials, and service accounts are excluded from version control.
 
 2. **Row-Level Security (RLS) & Data Leak Prevention (ປ້ອງກັນຂໍ້ມູນຮົ່ວໄຫຼ)**:
-   - **Customer Financial & Invoice Protection**: The `bills` table is strictly protected by RLS. Anonymous / public users cannot query or access any customer names, national ID cards, phone numbers, or invoice amounts.
-   - **Tamper-Proof QR Code & Bank Accounts**: Only authenticated `super_admin` accounts have permission to update `dealership_config` (BCEL QR image and company bank accounts), preventing unauthorized bank diversion.
-   - **Anti-Tamper User Roles**: Regular users cannot escalate their own privileges or promote themselves to `super_admin`.
-   - **Storage Object Protection**: Unauthenticated users cannot upload or delete files in the `avatr-assets` storage bucket.
+   - **Customer Financial & Invoice Protection**: The `bills` table is strictly protected by RLS. Anonymous / public users cannot query or access any customer names, national ID cards, phone numbers, or invoice amounts, and `sales` users can only read their own or assigned customer bills.
+   - **Tamper-Proof QR Code & Bank Accounts**: Only authenticated `admin` / `super_admin` accounts have permission to update `dealership_settings` via `patch_dealership_settings` (BCEL QR image and company bank accounts), preventing unauthorized bank diversion.
+   - **Anti-Tamper User Roles**: Regular users cannot escalate their own privileges or promote themselves to `admin` / `super_admin`; uninvited self-signups default to `suspended` (`sales`).
+   - **Storage Object Protection**: Unauthenticated users cannot access private `payment-slips` or upload/delete files in `dealership-assets` and `avatr-assets`.
 
 3. **Offline Demo Mode Isolation (ການຈຳກັດສິດ Offline Demo)**:
    - The offline mode is restricted to local development/sandbox environments (`VITE_ENABLE_OFFLINE_DEMO=true`). It must never be used with real customer data in production.

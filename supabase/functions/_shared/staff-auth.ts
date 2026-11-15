@@ -11,7 +11,7 @@ function getAllowedOrigins(): string[] {
     .split(',')
     .map((o) => o.trim().replace(/\/+$/, ''))
     .filter(Boolean);
-  return configured.length > 0 ? configured : DEFAULT_ALLOWED_ORIGINS;
+  return Array.from(new Set([...DEFAULT_ALLOWED_ORIGINS, ...configured]));
 }
 
 export function isOriginAllowed(req?: Request): boolean {

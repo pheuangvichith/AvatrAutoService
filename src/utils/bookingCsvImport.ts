@@ -101,6 +101,29 @@ export function stripTitle(name: string): string {
   return clean(name).replace(/^(ທ່ານ\s*ນາງ|ທ່ານ|ທ້າວ|ນາງ|ນ\.|ທ\.|mr\.?|mrs\.?|ms\.?)\s*/i, '').trim();
 }
 
+/** Deduplication key for bookings (supports phone-less bookings via customer + date + model). */
+export function bookingIdentityKey(phone: string, customerName: string, bookingDate?: string, modelName?: string): string {
+  if (phone.length >= 7) {
+    return `${phone}|${bookingDate || ''}|${modelName || ''}`;
+  }
+  const normCustomer = stripTitle(customerName).replace(/\s+/g, '').toLowerCase();
+  return normCustomer && bookingDate ? `nophone:${normCustomer}|${bookingDate}|${modelName || ''}` : '';
+}
+
+/** "ບ້ານ ໂພນທັນ, ເມືອງ ໄຊເສດຖາ, ນະຄອນຫຼວງວຽງຈັນ" → village / district / province. */
+export function parseLaoAddress(s: string): { village?: string; district?: string; province?: string } {
+  const out: { village?: string; district?: string; province?: string } = {};
+  s.split(/,|\s+(?=ເມືອງ|ແຂວງ|ນະຄອນຫຼວງ)/).map(p => clean(p)).forEach(p => {
+    if (/^ບ້ານ/.test(p)) out.village = p.replace(/^ບ້ານ\s*/, '');
+    else if (/^ເມືອງ/.test(p)) out.district = p.replace(/^ເມືອງ\s*/, '');
+    else if (/^(ແຂວງ|ນະຄອນ)/.test(p)) {
+      const prov = p.replace(/^ແຂວງ\s*/, '').trim();
+      if (prov) out.province = prov;
+    }
+  });
+  return out;
+}
+
 function headerCols(row: string[]): { cols: Map<Col, number[]>; gifts: Map<number, string> } | null {
   const cols = new Map<Col, number[]>();
   const gifts = new Map<number, string>();
@@ -139,6 +162,7 @@ export function parseBookingCsv(
   }
   if (!header) return { source, rows: [], error: 'no_booking_columns' };
   const { cols, gifts } = header;
+  const mapped = new Set<number>([...Array.from(cols.values()).flat(), ...gifts.keys()]);
   const first = (r: string[], k: Col) => (cols.get(k) || []).map(c => clean(r[c])).find(Boolean) || '';
 
   // Decide d/m vs m/d once per file: any first part above 12 means day-first
@@ -153,14 +177,21 @@ export function parseBookingCsv(
     if (!name || headerCols(r)) continue; // blanks, month bands, 2nd (English) header row
     const phone = normalizePhone(rawPhone);
     const rawModel = first(r, 'model');
-    const model = matchModel(rawModel, vehicles);
-    const bookingDate = parseSheetDate(first(r, 'date'), dayFirst);
+    const matchedModel = matchModel(rawModel, vehicles);
     const listPrice = parseMoney(first(r, 'total'));
+    const inferredModel = !matchedModel && !rawModel && listPrice === 57000
+      ? vehicles.find(v => /^avatr\s*11$/i.test(v.name.trim()))
+      : undefined;
+    const model = matchedModel || inferredModel;
+    const bookingDate = parseSheetDate(first(r, 'date'), dayFirst);
     const discountCell = first(r, 'discount');
     const discount = parseMoney(discountCell);
     const deposit = parseMoney(first(r, 'deposit'));
     const budget = parseMoney(first(r, 'budget'));
     const sales = first(r, 'sales');
+    const noteText = first(r, 'note');
+    const unlabeled = r.map((cell, c) => (mapped.has(c) ? '' : clean(cell))).filter(Boolean);
+    const address = parseLaoAddress(unlabeled.find(t => /^ບ້ານ/.test(t)) || '');
 
     const giftItems: GiftItem[] = [];
     gifts.forEach((giftName, c) => {
@@ -171,20 +202,22 @@ export function parseBookingCsv(
     const problems: string[] = [];
     if (phone.length < 7) problems.push('phone_missing');
     if (!bookingDate) problems.push('date_invalid');
-    if (!model) problems.push(rawModel ? 'model_unknown' : 'model_missing');
+    if (!matchedModel) problems.push(rawModel ? 'model_unknown' : 'model_missing');
     if (deposit == null) problems.push('no_deposit');
 
+    const identityKey = bookingIdentityKey(phone, name, bookingDate, model?.name || rawModel);
+
     let state: BookingCsvRow['state'] = 'new';
-    if (problems.includes('phone_missing') || problems.includes('date_invalid')) state = 'invalid';
-    else if (existingPhones.has(phone)) state = 'exists';
-    else if (seenPhones.has(phone)) state = 'duplicate';
-    if (state === 'new') seenPhones.add(phone);
+    if (!bookingDate || (phone.length < 7 && deposit == null && listPrice == null)) state = 'invalid';
+    else if ((phone.length >= 7 && existingPhones.has(phone)) || (identityKey && existingPhones.has(identityKey))) state = 'exists';
+    else if (identityKey && seenPhones.has(identityKey)) state = 'duplicate';
+    if (state === 'new' && identityKey) seenPhones.add(identityKey);
 
     const notes = [
-      first(r, 'note'),
+      noteText,
       first(r, 'giftText') && `ຂອງແຖມ: ${first(r, 'giftText')}`,
       discountCell && discount == null ? `ສ່ວນຫຼຸດ: ${discountCell}` : '',
-      !model && rawModel ? `ລຸ້ນ: ${rawModel}` : '',
+      !matchedModel && rawModel ? `ລຸ້ນ: ${rawModel}` : '',
       sales && `ພະນັກງານຂາຍ (Excel): ${sales}`,
       `ນຳເຂົ້າຈາກ ${source} #${i + 1}`,
     ].filter(Boolean).join(' · ');
@@ -192,20 +225,22 @@ export function parseBookingCsv(
     const lead: Lead | undefined = state === 'invalid' ? undefined : {
       id: newRecordId(),
       customerName: name,
-      phone: rawPhone.replace(/\s+/g, ' ').trim(),
+      phone: rawPhone.replace(/\s+/g, ' ').trim() || '-',
       category: 'walk_in',
       source: 'Excel import',
-      interestedModel: model?.name || '',
+      interestedModel: model?.name || rawModel,
       status: 'negotiation',
       priority: 'normal',
       notes,
       assignedTo: stripTitle(sales),
       createdAt: bookingDate ? `${bookingDate}T09:00:00.000Z` : new Date().toISOString(),
+      ...address,
       color: first(r, 'color') || undefined,
       listPriceUSD: listPrice,
       discountUSD: discount,
       bookingDepositUSD: deposit,
       bookingDate,
+      bookingNote: noteText || undefined,
       deliveryWindow: first(r, 'window') || undefined,
       giftItems: giftItems.length ? giftItems : undefined,
       giftBudgetUSD: budget ?? (giftItems.length ? DEFAULT_GIFT_BUDGET_USD : undefined),

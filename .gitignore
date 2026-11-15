@@ -102,5 +102,6 @@ docs/HANDOVER_TECHNICAL_RUNBOOK.md
 docs/USER_MANUAL_BY_ROLE.md
 docs/AVATR_MASTER_HANDOVER_PACKAGE.md
 scripts/generate_*.py
+scripts/upload_*.ts
 
 

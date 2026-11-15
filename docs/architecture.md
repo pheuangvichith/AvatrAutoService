@@ -71,13 +71,16 @@ graph TD
 
 ---
 
-## 3. Storage Optimization & Media Lifecycle Strategy (Phase 2 Roadmap)
+## 3. Data Retention, Database Longevity & Storage Capacity
 
-Supabase Storage bucket capacity management (Free Tier quota: 1 GB = 1,024 MB):
+- **Zero Expiration / No Auto-Deletion**: The system and source code have **no expiration date** and **never automatically delete** customer, bill, or vehicle records.
+- **Database Longevity (500 MB Free Tier + Dynamic Partitioning up to Year 2100)**:
+  - Stores **100,000+ bills** (~**20 – 50+ years** effortlessly for typical showroom volume).
+  - `archive_fiscal_year_bills(p_year)` supports dynamic yearly archive partitioning through **year 2100** (see `supabase/migrations/20261113120000_pre_handover_reconciliation_and_rpcs.sql:547`).
+- **Supabase Storage Capacity (`<= 300 KB` WebP client compression in `src/backend/data.ts:1679`)**:
 
-| Strategy Plan | Storage / Vehicle | Capacity | Free Tier Lifetime (1 GB) | Operational Approach |
-| :--- | :---: | :---: | :---: | :--- |
-| **Plan 1: WebP Compression (300 KB/image)** | ~1.1 MB (3 vehicle photos + 1 payment slip) | ~930 vehicles | **~4.5 – 5 years** ✅ | Compress images via Client Canvas to `.webp` (max 1200px / 300 KB) before upload; retain full historical records |
-| **Plan 2: WebP + 90-Day Slip Retention** | 30–50 cycling vehicles/quarter | Rolling steady-state | **Virtually unlimited (~150 MB steady)** 🚀 | Combine 300 KB WebP compression with periodic cleanup of audited quarterly payment slips |
-
-> **Practical Recommendation**: Start with **Plan 1** immediately to prevent oversized RAW/4K uploads. Once storage reaches ~500 MB (typically in 2–3 years), optionally enable the aged-slip retention policy from **Plan 2** after accounting sign-off.
+| Tier / Strategy Plan | Storage Quota | Image Compression Cap | Estimated Photo Capacity | Estimated Lifetime (600–1,000 receipt bills/year) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Free Tier (1 GB)** | `1 GB` | `<= 300 KB` WebP (`1200px`, `q=0.8`) | **~3,300+ images** | **~3 – 5 years** |
+| **Pro Tier (100 GB)** | `100 GB` | `<= 300 KB` WebP (`1200px`, `q=0.8`) | **300,000+ images** | **50+ years (full business lifetime)** |
+| **Free Tier + Annual Slip Offload (Plan 2)** | `1 GB` | `<= 300 KB` WebP | Rolling steady-state | **Unlimited** (download/archive old slips to local/Drive after accounting sign-off) |

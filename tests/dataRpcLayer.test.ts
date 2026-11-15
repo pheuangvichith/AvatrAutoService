@@ -54,3 +54,12 @@ test('data.ts invokes all required hardened RPCs and exports installment/after-s
     assert.equal(typeof (mod as Record<string, unknown>)[fn], 'function', `Expected export ${fn}`);
   }
 });
+
+test('data.ts fallback vehicle_models select query includes model spec columns', () => {
+  const src = readDataTs();
+  assert.match(
+    src,
+    /\.from\(['"]vehicle_models['"]\)\s*\.select\(['"][^'"]*range_cltc,acceleration,battery_capacity[^'"]*['"]\)/,
+    'fallback vehicle_models select query must include range_cltc,acceleration,battery_capacity',
+  );
+});

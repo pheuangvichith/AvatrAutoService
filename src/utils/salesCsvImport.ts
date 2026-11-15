@@ -2,7 +2,8 @@ import type { GiftItem, Lead, VehicleModel } from '../types';
 import { newRecordId } from '../backend/ids';
 import { DEFAULT_GIFT_BUDGET_USD } from '../data/giftCatalog';
 import { matchModel, parseCsv } from './stockCsvImport';
-import { GIFT_COLUMNS, clean, normalizePhone, parseMoney, parseSheetDate, stripTitle } from './bookingCsvImport';
+import { GIFT_COLUMNS, clean, normalizePhone, parseLaoAddress, parseMoney, parseSheetDate, stripTitle } from './bookingCsvImport';
+export { parseLaoAddress };
 
 /* Sales sheets ("ຍອດຂາຍ 2025" / "ຍອດຂາຍ 2026"): past sales become delivered customers.
    No bill is issued and stock is not touched — that stays a backend decision. */
@@ -23,6 +24,19 @@ const SALE_RULES: [SaleCol, RegExp][] = [
 ];
 
 const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
+
+/** Fix common manual-entry typos in 16/17-char Avatr VINs before validation. */
+export function normalizeVin(raw: string): string {
+  let vin = (raw || '').toUpperCase().replace(/\s/g, '');
+  if (/^LS6[A-Z0-9]{14}$/.test(vin)) {
+    vin = vin.slice(0, 3) + vin.slice(3).replace(/I/g, '1').replace(/O/g, '0');
+  }
+  const shortMatch = vin.match(/^LS6JE([A-HJ-NPR-Z0-9]{11})$/);
+  if (shortMatch) {
+    vin = `LS6J3E${shortMatch[1]}`;
+  }
+  return vin;
+}
 
 export interface SaleCsvRow {
   line: number;
@@ -56,16 +70,6 @@ function saleHeader(row: string[]): { cols: Map<SaleCol, number>; gifts: Map<num
   return cols.has('name') && (cols.has('vin') || cols.has('price')) ? { cols, gifts } : null;
 }
 
-/** "ບ້ານ ໂພນທັນ, ເມືອງ ໄຊເສດຖາ, ນະຄອນຫຼວງວຽງຈັນ" → village / district / province. */
-export function parseLaoAddress(s: string): { village?: string; district?: string; province?: string } {
-  const out: { village?: string; district?: string; province?: string } = {};
-  s.split(',').map(p => clean(p)).forEach(p => {
-    if (/^ບ້ານ/.test(p)) out.village = p.replace(/^ບ້ານ\s*/, '');
-    else if (/^ເມືອງ/.test(p)) out.district = p.replace(/^ເມືອງ\s*/, '');
-    else if (/^(ແຂວງ|ນະຄອນ)/.test(p)) out.province = p.replace(/^ແຂວງ\s*/, '');
-  });
-  return out;
-}
 
 /**
  * A lead with the same phone that has no VIN and is not delivered (e.g. an imported booking)
@@ -96,29 +100,62 @@ export function parseSalesCsv(
     return !!m && +m[1] > 12;
   });
 
-  const openLeadByPhone = new Map<string, Lead>();
+  const normName = (s: string) => stripTitle(s).replace(/\s+/g, '').toLowerCase();
+  const openLeadsByPhone = new Map<string, Lead[]>();
+  const openNoPhoneByName = new Map<string, Lead>();
   existingLeads.forEach(l => {
+    if (l.vin || l.status === 'delivered' || claimedLeadIds.has(l.id)) return;
     const p = normalizePhone(l.phone);
-    if (p.length >= 7 && !l.vin && l.status !== 'delivered' && !claimedLeadIds.has(l.id)) openLeadByPhone.set(p, l);
+    if (p.length >= 7) {
+      const list = openLeadsByPhone.get(p) || [];
+      list.push(l);
+      openLeadsByPhone.set(p, list);
+    } else {
+      const nk = normName(l.customerName);
+      if (nk && !openNoPhoneByName.has(nk)) openNoPhoneByName.set(nk, l);
+    }
   });
+
+  const claimMatchingLead = (phone: string, modelName: string, customerName: string, saleDate?: string): Lead | undefined => {
+    if (phone.length >= 7) {
+      const list = openLeadsByPhone.get(phone);
+      if (list && list.length) {
+        let idx = modelName
+          ? list.findIndex(l => l.interestedModel && l.interestedModel.toLowerCase() === modelName.toLowerCase())
+          : -1;
+        if (idx === -1 && list.length === 1 && (!list[0].bookingDate || !saleDate || saleDate >= list[0].bookingDate)) {
+          idx = 0;
+        }
+        if (idx >= 0) return list.splice(idx, 1)[0];
+      }
+    }
+    const nk = normName(customerName);
+    if (nk && openNoPhoneByName.has(nk)) {
+      const hit = openNoPhoneByName.get(nk)!;
+      openNoPhoneByName.delete(nk);
+      return hit;
+    }
+    return undefined;
+  };
 
   const out: SaleCsvRow[] = [];
   for (let i = headerIndex + 1; i < grid.length; i++) {
     const r = grid[i];
     const name = get(r, 'name');
-    if (!name || saleHeader(r)) continue; // blanks, month bands, repeated headers
+    if (!name || saleHeader(r) || /^ເຊັນຜູ້ຈັດການ/.test(name)) continue; // blanks, headers, signature footer
     const rawPhone = get(r, 'phone');
     const phone = normalizePhone(rawPhone);
-    const vin = get(r, 'vin').toUpperCase().replace(/\s/g, '');
+    const vin = normalizeVin(get(r, 'vin'));
     const hasVin = VIN_RE.test(vin);
     const rawModel = get(r, 'model');
     const model = matchModel(rawModel, vehicles);
     const date = parseSheetDate(get(r, 'date'), dayFirst);
     const price = parseMoney(get(r, 'price'));
-    const note = get(r, 'note');
     const sales = get(r, 'sales');
     const unlabeled = r.map((cell, c) => (mapped.has(c) ? '' : clean(cell))).filter(Boolean);
     const address = parseLaoAddress(unlabeled.find(t => /^ບ້ານ/.test(t)) || '');
+    const extraNotes = unlabeled.filter(t => !/^ບ້ານ/.test(t) && !/^\d+(\.\d+)?$/.test(t));
+    const note = [get(r, 'note'), ...extraNotes].filter(Boolean).join(' · ');
 
     const giftItems: GiftItem[] = [];
     gifts.forEach((giftName, c) => {
@@ -136,10 +173,9 @@ export function parseSalesCsv(
     if (!date || (phone.length < 7 && !hasVin)) state = 'invalid';
     else if (hasVin && knownVins.has(vin)) state = 'exists';
     else if (hasVin && seenVins.has(vin)) state = 'duplicate';
-    const target = state === 'new' ? openLeadByPhone.get(phone) : undefined;
+    const target = state === 'new' ? claimMatchingLead(phone, model?.name || '', name, date) : undefined;
     if (target) {
       state = 'merge';
-      openLeadByPhone.delete(phone); // one sale per open lead
       claimedLeadIds.add(target.id);
     }
     if ((state === 'new' || state === 'merge') && hasVin) seenVins.add(vin);
@@ -167,6 +203,11 @@ export function parseSalesCsv(
       lead = {
         ...target,
         ...saleFields,
+        phone: (!target.phone || target.phone === '-') && phone.length >= 7 ? rawPhone.replace(/\s+/g, ' ').trim() : target.phone,
+        village: address.village || target.village,
+        district: address.district || target.district,
+        province: address.province || target.province,
+        interestedModel: model?.name || target.interestedModel || rawModel,
         listPriceUSD: target.listPriceUSD ?? price,
         giftItems: target.giftItems ?? (giftItems.length ? giftItems : undefined),
         giftBudgetUSD: target.giftBudgetUSD ?? (giftItems.length ? DEFAULT_GIFT_BUDGET_USD : undefined),
@@ -179,7 +220,7 @@ export function parseSalesCsv(
         phone: rawPhone.replace(/\s+/g, ' ').trim() || '-',
         category: 'walk_in',
         source: 'Excel import',
-        interestedModel: model?.name || '',
+        interestedModel: model?.name || rawModel,
         priority: 'normal',
         assignedTo: stripTitle(sales),
         createdAt: `${date}T09:00:00.000Z`,

@@ -40,10 +40,6 @@ if (targetOrigin !== expectedOrigin) {
   );
 }
 
-// Check if existing cached Chromium or default browser is available
-const cachedChromium = path.join(process.env.HOME || '', '.cache/ms-playwright/chromium-1243/chrome-linux64/chrome');
-const hasCachedChromium = fs.existsSync(cachedChromium);
-
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,

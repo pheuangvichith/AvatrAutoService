@@ -56,9 +56,12 @@ export interface StockCsvRow {
 
 const clean = (s?: string) => {
   const v = (s || '').replace(/\s+/g, ' ').trim();
-  return v === '-' || v === '—' ? '' : v;
+  return /^['’]?\s*[-—]+$/.test(v) ? '' : v;
 };
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const VIN17_RE = /^[A-HJ-NPR-Z0-9]{17}$/;
+const MOTOR_SERIAL_RE = /^[A-Z0-9]{10,25}$/i;
 
 /** Map "AVATR 07 Elite EV Edition" to the closest configured model (longest name prefix). */
 export function matchModel(raw: string, vehicles: VehicleModel[]): VehicleModel | undefined {
@@ -76,8 +79,8 @@ export function matchModel(raw: string, vehicles: VehicleModel[]): VehicleModel 
 export function inferStatus(texts: string[]): { status: StockStatus; customer?: string; note?: string } {
   const all = texts.filter(Boolean);
   const joined = all.join(' ');
-  const customer = all.find(t => /^(ທ່ານ|ທ້າວ|ນາງ|ນ\.|ທ\.|ທ່ານນາງ)/.test(t));
-  if (/ສົ່ງມອບແລ້ວ|ຕັດສະຕ໋ອກ|ສົ່ງແລ້ວ/.test(joined)) return { status: 'sold', customer };
+  const customer = all.find(t => /^(ທ່ານ|ທ້າວ|ນາງ|ນ\.|ທ\.|ທ່ານນາງ|ບໍລິສັດ|ລູກຄ້າ)/.test(t));
+  if (/ສົ່ງມອບແລ້ວ|ຕັດສະຕ໋ອກ|ສົ່ງແລ້ວ|delivery\s*\d/i.test(joined)) return { status: 'sold', customer };
   if (/ຖອດອາໄລ່|ຖອດອາໄຫຼ່|ຖອດອາໄຫລ່/.test(joined)) return { status: 'parts_donor', customer, note: joined };
   if (/ສ້ອມ|ບັນຫາ|ເສຍ|ບໍ່ເຢັນ/.test(joined)) return { status: 'problem', customer, note: joined };
   if (customer) return { status: 'reserved', customer };
@@ -112,6 +115,14 @@ export interface ParsedStockFile {
   error?: string;
 }
 
+function detectSectionBatch(row: string[]): string | undefined {
+  const nonEmpty = row.map(clean).filter(Boolean);
+  if (nonEmpty.length !== 1) return undefined;
+  const cell = nonEmpty[0];
+  if (cell.length <= 3 || /^\d+$/.test(cell) || VIN17_RE.test(cell.toUpperCase())) return undefined;
+  return /ເດືອນ|ລົດເຂົ້າ|batch|received|\d{2}\/\d{2}|\d{4}/i.test(cell) ? cell : undefined;
+}
+
 export function parseStockCsv(
   text: string,
   source: string,
@@ -125,6 +136,11 @@ export function parseStockCsv(
   let { cols } = header;
   const at = (r: string[], f: Field) => (cols.get(f) || []).map(c => clean(r[c])).filter(Boolean);
   let mapped = new Set(Array.from(cols.values()).flat());
+  let currentBatch = source.replace(/\.csv$/i, '');
+  for (let i = 0; i < header.index; i++) {
+    const batch = detectSectionBatch(grid[i]);
+    if (batch) currentBatch = batch;
+  }
   const out: StockCsvRow[] = [];
 
   for (let i = header.index + 1; i < grid.length; i++) {
@@ -132,13 +148,70 @@ export function parseStockCsv(
     // Sheets stack several tables, each with its own header and column order
     const sub = headerCols(r);
     if (sub) { cols = sub; mapped = new Set(Array.from(cols.values()).flat()); continue; }
-    const vin = (at(r, 'vin')[0] || '').toUpperCase().replace(/\s/g, '');
+    const sectionBatch = detectSectionBatch(r);
+    if (sectionBatch) { currentBatch = sectionBatch; continue; }
+
     const rawModel = at(r, 'model').sort((a, b) => b.length - a.length)[0] || '';
-    if (!vin && !rawModel) continue; // blank / section rows ("ລົດເຂົ້າ 27/5/26")
+    const vinCol = cols.get('vin')?.[0] ?? -1;
+    const frontCol = cols.get('front')?.[0];
+    const rearCols = cols.get('rear') || [];
+    const colorCol = cols.get('color')?.[0];
+    const interiorCol = cols.get('interior')?.[0];
+
+    let vin = (at(r, 'vin')[0] || '').toUpperCase().replace(/\s/g, '');
+    let frontMotor = at(r, 'front')[0] || '';
+    let rearMotors = Array.from(new Set(at(r, 'rear')));
+    let color = at(r, 'color')[0] || '';
+    let interiorColor = at(r, 'interior')[0] || '';
+    const usedCols = new Set(mapped);
+    let remarkTexts = [...at(r, 'remark'), ...at(r, 'customer'), ...at(r, 'status')];
+
+    // Shift Case 1: copied row with Gear Type ("AT") before the 17-char VIN
+    if (vin === 'AT' && vinCol >= 0) {
+      const nextVin = clean(r[vinCol + 1]).toUpperCase().replace(/\s/g, '');
+      if (VIN17_RE.test(nextVin)) {
+        vin = nextVin;
+        frontMotor = clean(r[vinCol + 2]);
+        rearMotors = Array.from(new Set([clean(r[vinCol + 3]), clean(r[vinCol + 4])].filter(Boolean)));
+        color = clean(r[vinCol + 5]);
+        interiorColor = '';
+        const shiftedRemark = clean(r[vinCol + 6]);
+        remarkTexts = shiftedRemark ? [shiftedRemark] : [];
+        for (let c = vinCol; c <= vinCol + 6; c++) usedCols.add(c);
+      }
+    } else if (
+      // Shift Case 2: RWD row placed under an AWD header (no Front Motor cell, Rear shifts left)
+      frontCol != null && rearCols.length === 1 && colorCol != null && interiorCol != null &&
+      frontMotor && /\d/.test(frontMotor) &&
+      rearMotors.length === 1 && !/\d/.test(rearMotors[0]) &&
+      !interiorColor
+    ) {
+      interiorColor = color;
+      color = rearMotors[0];
+      rearMotors = [frontMotor];
+      frontMotor = '';
+    } else if (
+      // Shift Case 3: AWD row placed under a RWD header (Front Motor lands in Rear, Rear in Color)
+      frontCol == null && rearCols.length === 1 && colorCol != null && interiorCol != null &&
+      rearMotors.length === 1 &&
+      MOTOR_SERIAL_RE.test(color) && /\d/.test(color)
+    ) {
+      frontMotor = rearMotors[0];
+      rearMotors = [color];
+      color = interiorColor;
+      interiorColor = clean(r[interiorCol + 1]);
+      usedCols.add(interiorCol + 1);
+    }
+
+    if (!vin && !rawModel) continue; // blank / section rows
     const matchedModel = matchModel(rawModel, vehicles);
     const vinLooksReal = /^[A-Z0-9]{17}$/.test(vin);
     if (!vinLooksReal && !matchedModel) continue; // notes under the table (e.g. 'Note | Wheel')
     if (!vinLooksReal && !/^[A-Za-z]/.test(rawModel)) continue; // summary block ("ລົດ AVATR 07 | 8")
+    const hasVehicleDetails = Boolean(
+      frontMotor || rearMotors.length || color || interiorColor || at(r, 'engine')[0] || at(r, 'price')[0],
+    );
+    if (!vinLooksReal && (/^(#ref!|\d+)$/i.test(vin) || (!vin && !clean(r[0]) && !hasVehicleDetails))) continue; // summary block ("| AVATR 12 | | 10")
 
     const rawCsvPrice = at(r, 'price')[0] || '';
     const parsedCsvPrice = rawCsvPrice ? Number(rawCsvPrice.replace(/[^\d.]/g, '')) : 0;
@@ -147,7 +220,7 @@ export function parseStockCsv(
       : (matchedModel?.priceStartingUSD || 0);
 
     const problems: string[] = [];
-    if (!/^[A-Z0-9]{17}$/.test(vin)) problems.push('vin_invalid');
+    if (!vinLooksReal) problems.push('vin_invalid');
     if (!rawModel) problems.push('model_missing');
     else if (!matchedModel) problems.push('model_unknown');
     if (!(priceUSD > 0)) problems.push('price_missing');
@@ -159,14 +232,13 @@ export function parseStockCsv(
     if (state === 'new') seenVins.add(vin);
 
     const freeText = [
-      ...at(r, 'remark'), ...at(r, 'customer'), ...at(r, 'status'),
-      ...r.map((cell, c) => (mapped.has(c) ? '' : clean(cell))).filter(t => t && !/^\d+$/.test(t)),
+      ...remarkTexts,
+      ...r.map((cell, c) => (usedCols.has(c) ? '' : clean(cell))).filter(t => t && !/^\d+$/.test(t)),
     ];
     const inferred = inferStatus(freeText);
     const { customer, note } = inferred;
     // An uninspected unit is never "ready": it arrives as imported with PDI pending, like the Stock-In form.
     const status: StockStatus = inferred.status === 'ready' ? 'imported' : inferred.status;
-    const rear = at(r, 'rear');
     const modelName = matchedModel?.name || rawModel;
     const lakRate = resolveLakExchangeRate();
     const priceLAK = parsedCsvPrice > 0
@@ -177,12 +249,12 @@ export function parseStockCsv(
       vin,
       model: modelName,
       trim: rawModel !== modelName ? rawModel : '',
-      frontMotorNumber: at(r, 'front')[0] || undefined,
-      rearMotorNumber: rear.length ? rear.join(' / ') : undefined, // dual rear motors (06T) kept together
+      frontMotorNumber: frontMotor || undefined,
+      rearMotorNumber: rearMotors.length ? rearMotors.join(' / ') : undefined, // dual rear motors (06T) kept together
       engineNumber: at(r, 'engine')[0] || undefined,
       powertrainType: /reev/i.test(rawModel) ? 'REEV' : 'BEV',
-      color: at(r, 'color')[0] || '-',
-      interiorColor: at(r, 'interior')[0] || '',
+      color: color || '-',
+      interiorColor,
       battery: '',
       priceUSD,
       priceLAK,
@@ -190,9 +262,9 @@ export function parseStockCsv(
       status,
       pdiStatus: 'pending',
       reservedForCustomer: customer,
-      issueNote: status === 'problem' || status === 'parts_donor' ? note : undefined,
+      issueNote: status === 'problem' || status === 'parts_donor' ? note : (status === 'reserved' && customer ? `ຈອງ: ${customer}` : undefined),
       mileageKm: Number((at(r, 'mileage')[0] || '').replace(/[^\d.]/g, '')) || 0,
-      incomingBatch: source.replace(/\.csv$/i, ''),
+      incomingBatch: currentBatch,
     };
 
     out.push({ line: i + 1, source, vin, rawModel, matchedModel, item, state, problems });

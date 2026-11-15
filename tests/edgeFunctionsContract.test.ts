@@ -33,6 +33,17 @@ test('staff-auth rejects unlisted browser Origins with 403 and never reflects fa
   assert.match(configToml, /\[functions\.manage-staff\][\s\S]*?verify_jwt\s*=\s*true/);
 });
 
+test('staff-auth getAllowedOrigins merges DEFAULT_ALLOWED_ORIGINS with configured origins', () => {
+  const authHelper = fs.readFileSync(path.join(ROOT, 'supabase/functions/_shared/staff-auth.ts'), 'utf8');
+  const fnMatch = authHelper.match(/function\s+getAllowedOrigins\s*\([^)]*\)[^{]*\{([^}]*)\}/);
+  assert.ok(fnMatch, 'Missing getAllowedOrigins function in staff-auth.ts');
+  assert.match(
+    fnMatch[1],
+    /new\s+Set\s*\(\s*\[\s*\.\.\.DEFAULT_ALLOWED_ORIGINS\s*,\s*\.\.\.configured\s*\]\s*\)/,
+  );
+  assert.doesNotMatch(fnMatch[1], /configured\.length\s*>\s*0\s*\?\s*configured\s*:/);
+});
+
 test('manage-staff revokes sessions on suspend and soft-archives instead of hard-deleting', () => {
   const src = fs.readFileSync(path.join(ROOT, 'supabase/functions/manage-staff/index.ts'), 'utf8');
   assert.doesNotMatch(src, /auth\.admin\.deleteUser/, 'manage-staff must never hard-delete auth.users');

@@ -14,7 +14,7 @@ const WEBP_HEADER = Uint8Array.from([
 const PDF_HEADER = new TextEncoder().encode('%PDF-1.7\n%sample');
 
 function makeFile(bytes: Uint8Array, type: string, extraSize = 0): File {
-  const parts: BlobPart[] = [bytes];
+  const parts: BlobPart[] = [new Uint8Array(bytes)];
   if (extraSize > 0) parts.push(new Uint8Array(extraSize));
   return new File(parts, 'upload.bin', { type });
 }

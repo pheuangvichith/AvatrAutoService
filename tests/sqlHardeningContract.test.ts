@@ -146,3 +146,49 @@ test('retired roles cleanup migration updates handle_new_auth_user fallback befo
   assert.match(sql, /DELETE\s+FROM\s+public\.staff_roles[\s\S]*?role_code\s+IN\s*\(\s*'technician'\s*,\s*'general_user'\s*\)/i);
 });
 
+test('default models seed migration upserts avatr-12/11/07, cleans test rows, and upgrades get_showroom_initial_data', () => {
+  const migPath = path.join(ROOT, 'supabase/migrations/20261115103500_seed_default_models_and_showroom_init_specs.sql');
+  assert.ok(fs.existsSync(migPath), 'Missing 20261115103500_seed_default_models_and_showroom_init_specs.sql');
+  const sql = fs.readFileSync(migPath, 'utf8');
+
+  assert.match(sql, /^\s*BEGIN;/m);
+  assert.match(sql, /^\s*COMMIT;\s*$/m);
+
+  assert.match(sql, /INSERT\s+INTO\s+public\.vehicle_models[\s\S]*?ON\s+CONFLICT\s*\(\s*id\s*\)\s+DO\s+UPDATE\s+SET/i);
+  for (const modelId of ['avatr-12', 'avatr-11', 'avatr-07']) {
+    assert.ok(sql.includes(`'${modelId}'`), `Missing canonical seed for ${modelId}`);
+  }
+
+  assert.match(sql, /DELETE\s+FROM\s+public\.vehicle_models[\s\S]*?'avatr-07-ultra-performance-7713'/i);
+  assert.match(sql, /DELETE\s+FROM\s+public\.bill_void_logs[\s\S]*?'E2E revert test'[\s\S]*?'E2E void sale rollback check'/i);
+  assert.match(sql, /UPDATE\s+public\.staff_profiles[\s\S]*?status\s*=\s*'archived'[\s\S]*?'test01@gmail\.com'/i);
+
+  const fnMatch = sql.match(
+    /CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.get_showroom_initial_data\(\)[\s\S]*?GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.get_showroom_initial_data\(\)\s+TO\s+authenticated;/i
+  );
+  assert.ok(fnMatch, 'Missing get_showroom_initial_data() function and REVOKE/GRANT block');
+  const fnSql = fnMatch[0];
+
+  assert.match(fnSql, /SECURITY\s+DEFINER/i);
+  assert.match(fnSql, /SET\s+search_path\s*=\s*public,\s*pg_catalog,\s*pg_temp/i);
+  assert.match(fnSql, /REVOKE\s+ALL\s+ON\s+FUNCTION\s+public\.get_showroom_initial_data\(\)\s+FROM\s+PUBLIC,\s*anon;/i);
+  assert.match(fnSql, /GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.get_showroom_initial_data\(\)\s+TO\s+authenticated;/i);
+  assert.match(fnSql, /UPDATE\s+public\.staff_profiles[\s\S]*?SET\s+last_login\s*=\s*now\(\)[\s\S]*?auth\.uid\(\)/i);
+  assert.match(fnSql, /range_cltc,\s*acceleration,\s*battery_capacity,\s*battery_supplier,\s*charging_speed,\s*smart_driving,\s*powertrain/i);
+  assert.match(fnSql, /gallery,\s*is_custom,\s*colors,\s*features,\s*description,\s*created_at/i);
+});
+
+test('avatr-06 and avatr-06t seed migration wraps in transaction and idempotently upserts both models', () => {
+  const migPath = path.join(ROOT, 'supabase/migrations/20261115120000_seed_avatr_06_and_06t_models.sql');
+  assert.ok(fs.existsSync(migPath), 'Missing 20261115120000_seed_avatr_06_and_06t_models.sql');
+  const sql = fs.readFileSync(migPath, 'utf8');
+
+  assert.match(sql, /^\s*BEGIN;/m);
+  assert.match(sql, /^\s*COMMIT;\s*$/m);
+  assert.match(sql, /INSERT\s+INTO\s+public\.vehicle_models[\s\S]*?ON\s+CONFLICT\s*\(\s*id\s*\)\s+DO\s+UPDATE\s+SET/i);
+  for (const modelId of ['avatr-06t', 'avatr-06']) {
+    assert.ok(sql.includes(`'${modelId}'`), `Missing canonical seed for ${modelId}`);
+  }
+});
+
+

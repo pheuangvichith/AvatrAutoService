@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { X, Upload, Loader2, FileSpreadsheet, AlertTriangle } from 'lucide-react';
 import type { InvoiceBillRecord, Language, Lead, VehicleModel } from '../../types';
-import { normalizePhone, parseBookingCsv } from '../../utils/bookingCsvImport';
+import { bookingIdentityKey, normalizePhone, parseBookingCsv } from '../../utils/bookingCsvImport';
 import { parseSalesCsv } from '../../utils/salesCsvImport';
 import { giftTotalUSD } from '../../data/giftCatalog';
 import { saveLead } from '../../backend/data';
@@ -41,6 +41,7 @@ export default function ImportBookingCsvModal({ vehicles, leads, bills, currentU
   const [fileErrors, setFileErrors] = useState<string[]>([]);
   const [readError, setReadError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const importingLockRef = useRef(false);
   const [progress, setProgress] = useState(0);
   const [failures, setFailures] = useState<{ name: string; message: string }[]>([]);
   const [doneCount, setDoneCount] = useState<number | null>(null);
@@ -72,7 +73,13 @@ export default function ImportBookingCsvModal({ vehicles, leads, bills, currentU
     const parsed: Row[] = [];
     const errors: string[] = [];
     // Shared across files so repeats between sheets are caught
-    const existingPhones = new Set(leads.map(l => normalizePhone(l.phone)).filter(p => p.length >= 7));
+    const existingPhones = new Set<string>();
+    leads.forEach(l => {
+      const p = normalizePhone(l.phone);
+      if (p.length >= 7) existingPhones.add(p);
+      const idKey = bookingIdentityKey(p, l.customerName, l.bookingDate, l.interestedModel);
+      if (idKey) existingPhones.add(idKey);
+    });
     const seenPhones = new Set<string>();
     const knownVins = new Set([...leads.map(l => l.vin), ...bills.map(b => b.vin)].filter((v): v is string => !!v).map(v => v.toUpperCase()));
     const seenVins = new Set<string>();
@@ -107,24 +114,30 @@ export default function ImportBookingCsvModal({ vehicles, leads, bills, currentU
   const warnings = rows.filter(r => r.problems.length > 0);
 
   const runImport = async () => {
+    if (importingLockRef.current) return;
+    importingLockRef.current = true;
     setImporting(true);
     setProgress(0);
-    const saved: Lead[] = [];
-    const failed: { name: string; message: string }[] = [];
-    for (const row of importable) {
-      try {
-        await saveLead(row.lead!, currentUserId);
-        saved.push(row.lead!);
-      } catch (err) {
-        failed.push({ name: row.name, message: err instanceof Error ? err.message : String(err) });
+    try {
+      const saved: Lead[] = [];
+      const failed: { name: string; message: string }[] = [];
+      for (const row of importable) {
+        try {
+          await saveLead(row.lead!, currentUserId);
+          saved.push(row.lead!);
+        } catch (err) {
+          failed.push({ name: row.name, message: err instanceof Error ? err.message : String(err) });
+        }
+        setProgress(p => p + 1);
       }
-      setProgress(p => p + 1);
+      if (saved.length) onImported(saved);
+      setFailures(failed);
+      setDoneCount(saved.length);
+      setRows([]);
+    } finally {
+      importingLockRef.current = false;
+      setImporting(false);
     }
-    if (saved.length) onImported(saved);
-    setFailures(failed);
-    setDoneCount(saved.length);
-    setRows([]);
-    setImporting(false);
   };
 
   const th = 'px-2 py-2 text-left font-semibold text-slate-600 dark:text-zinc-400 whitespace-nowrap';
